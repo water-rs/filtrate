@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/water-rs/filtrate/compare/v0.2.1...v0.2.2) - 2026-09-14
+
+### Other
+
+- disable incremental builds and trim debuginfo ([#16](https://github.com/water-rs/filtrate/pull/16))
+- run tests with cargo nextest ([#14](https://github.com/water-rs/filtrate/pull/14))
+
 ## [0.2.1](https://github.com/water-rs/filtrate/compare/v0.2.0...v0.2.1) - 2026-09-13
 
 ### Added
