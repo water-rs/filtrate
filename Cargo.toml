@@ -48,7 +48,7 @@ webgl = ["wgpu/webgl"]
 filtrate-core = { version = "0.2.0", path = "core" }
 filtrate-derive = { version = "0.1.0", path = "derive" }
 wgpu = "29.0.4"
-shaderloom = "0.1.0"
+shaderloom = { version = "0.1.2", default-features = false, features = ["runtime"] }
 bytemuck = { version = "1", features = ["derive"] }
 num-traits = { version = "0.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
@@ -60,10 +60,17 @@ tracing = "0.1.44"
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-time = "1"
 
+# The build script only runs the platform toolchain (xcrun/dxc) over the
+# pre-translated shader package checked in under src/shaders/compiled — no
+# naga on the host. Regenerate the package with package-shaders.sh.
 [build-dependencies]
-shaderloom = { version = "0.1.0", features = ["build"] }
+shaderloom = { version = "0.1.2", default-features = false }
 
 [dev-dependencies]
+# `build` here is dev-only: tests/packaged_shaders.rs re-packages the WGSL
+# shaders and asserts the checked-in artifacts are current. The normal graph
+# stays packaged-only.
+shaderloom = { version = "0.1.2", features = ["build"], default-features = false }
 divan = "0.1"
 pollster = "1.0"
 
@@ -78,3 +85,9 @@ harness = false
 # `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
 ignored = ["shaderloom"]
+
+# shaderloom's packaged-artifact API (`shaderloom::packaged`, used by build.rs)
+# is not on crates.io yet; pin the rev that carries it, as other water-rs
+# consumers do.
+[patch.crates-io]
+shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "fec1801849979239097cabbf2ad813e56a91132d" }
