@@ -1,3 +1,7 @@
 # WGSL sources are embedded with include_str! and matched byte-for-byte by
 # the shader specializer; keep them LF on every checkout.
 *.wgsl text eol=lf
+
+# The packaged shader translations are checked byte for byte against a fresh
+# shaderloom package by tests/packaged_shaders.rs; never convert line endings.
+src/shaders/compiled/** -text
