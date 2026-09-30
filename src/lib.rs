@@ -62,6 +62,7 @@ pub mod effect;
 pub mod filters;
 pub mod multi_input;
 pub mod runtime;
+pub mod shader_effect;
 
 pub use effect::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
@@ -74,6 +75,7 @@ pub use filtrate_core::{
     StageCollector, WatchGuard,
 };
 pub use runtime::{FilterAdapter, HdrPolicy};
+pub use shader_effect::{SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError};
 pub use shaderloom::WgslModuleCache;
 
 /// Procedural derive that generates a [`Filter`] implementation for a tuple
