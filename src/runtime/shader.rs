@@ -127,7 +127,7 @@ pub(super) const fn storage_format_to_wgsl(
 /// Whether `format` supports hardware linear filtering without extra device
 /// features (float32 filtering is feature-gated in WebGPU; float16 and unorm
 /// formats are filterable in core).
-pub(super) const fn is_filterable_texture_format(format: wgpu::TextureFormat) -> bool {
+pub const fn is_filterable_texture_format(format: wgpu::TextureFormat) -> bool {
     !matches!(format, wgpu::TextureFormat::Rgba32Float)
 }
 

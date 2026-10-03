@@ -1792,6 +1792,164 @@ fn gpu_export_filter_gallery_images() {
             threshold: 0.6,
         })
     );
+
+    // An application-supplied post-process shader: scanlines whose strength
+    // is its first parameter, plus a slight edge vignette.
+    let scanlines = crate::ShaderEffect::new(
+        "@fragment
+        fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+            let color = textureSample(input_texture, input_sampler, in.uv);
+            let row = u32(in.position.y);
+            let line = select(1.0, 0.0, (row / 2u) % 2u == 1u);
+            let centered = in.uv - vec2<f32>(0.5);
+            let vignette = 1.0 - dot(centered, centered);
+            let shade = mix(1.0, line, effect_param(0u)) * vignette;
+            return vec4<f32>(color.rgb * shade, color.a);
+        }",
+    )
+    .expect("the gallery scanline shader is valid WGSL")
+    .param(0.6);
+    let size = FilterReadbackSize {
+        input: (input_width, input_height),
+        output: (input_width, input_height),
+    };
+    let result = run_filter_and_readback(device, queue, &input_texture, size, scanlines);
+    write_png(
+        &output_dir.join("shader_effect_scanlines.png"),
+        input_width,
+        input_height,
+        &result,
+    );
+}
+
+/// An RGBA8 texture of `size` for single-effect GPU tests.
+fn rgba8_texture(
+    device: &wgpu::Device,
+    label: &'static str,
+    (width, height): (u32, u32),
+    usage: wgpu::TextureUsages,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage,
+        view_formats: &[],
+    })
+}
+
+/// A user shader samples the input, reads the frame time from the host's
+/// timeline, and reads a reactive parameter at the value its latest change
+/// delivered — and, being animated, asks for the next frame.
+#[test]
+fn gpu_shader_effect_reads_input_time_and_params() {
+    let gpu = create_test_device();
+    let device = &gpu.device;
+    let queue = &gpu.queue;
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let (width, height) = (4, 4);
+
+    let input_texture = rgba8_texture(
+        device,
+        "shader effect test input",
+        (width, height),
+        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    );
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &input_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[10, 20, 200, 255].repeat((width * height) as usize),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let output_texture = rgba8_texture(
+        device,
+        "shader effect test output",
+        (width, height),
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    );
+
+    let strength = ScriptedParam::constant(0.25);
+    let (mut effect, _subscription) = crate::ShaderEffect::new(
+        "@fragment
+        fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+            let source = textureSample(input_texture, input_sampler, in.uv);
+            return vec4<f32>(effect_param(0u), fract(uniforms.time), source.b, 1.0);
+        }",
+    )
+    .expect("the test shader is valid WGSL")
+    .animated()
+    .watch_param(&strength);
+
+    let shader_cache = WgslModuleCache::new();
+    let ctx = EffectContext {
+        device,
+        queue,
+        shader_cache: &shader_cache,
+        input_format: format,
+        output_format: format,
+    };
+    pollster::block_on(effect.setup(&ctx)).expect("shader effect setup should succeed");
+
+    (strength
+        .callback
+        .lock()
+        .expect("scripted param callback mutex poisoned")
+        .as_ref()
+        .expect("watch_param subscribed the parameter"))(filtrate_core::AnimatedTarget {
+        value: 0.75,
+        interpolator: None,
+    });
+
+    let input = EffectInput {
+        device,
+        queue,
+        texture: &input_texture,
+        view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        format,
+        width,
+        height,
+        timing: EffectFrameTiming::new(Duration::from_millis(1500), Duration::from_millis(16), 90),
+    };
+    let output = EffectOutput {
+        device,
+        queue,
+        texture: &output_texture,
+        view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        format,
+        width,
+        height,
+    };
+    let needs_redraw = effect
+        .render(&input, &output)
+        .expect("shader effect render should succeed");
+    assert!(needs_redraw, "an animated shader asks for the next frame");
+
+    let [red, green, blue, alpha] =
+        readback_rgba8_pixel(device, queue, &output_texture, width, height);
+    assert!(red.abs_diff(191) <= 1, "param 0.75 -> red {red}");
+    assert!(green.abs_diff(128) <= 1, "time 1.5s -> green {green}");
+    assert_eq!(blue, 200, "the input's blue channel passes through");
+    assert_eq!(alpha, 255);
 }
 
 // ============================================================================

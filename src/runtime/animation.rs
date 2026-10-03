@@ -17,7 +17,9 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use filtrate_core::{AnimationTrack, FilterParam, Interpolator, SignalVisitor, WatchGuard};
+use filtrate_core::{
+    AnimatedTarget, AnimationTrack, FilterParam, Interpolator, SignalVisitor, WatchGuard,
+};
 
 use crate::effect::EffectRedrawCallback;
 
@@ -64,32 +66,51 @@ impl core::fmt::Debug for ParamAnimationEvent {
 // Stage and signal visitors used by the planner / animation watcher install.
 // ============================================================================
 
-pub struct WatcherInstaller<'a> {
-    pub sender: Sender<ParamAnimationEvent>,
-    pub redraw_callback: Arc<OnceLock<EffectRedrawCallback>>,
-    pub events_pending: Arc<core::sync::atomic::AtomicBool>,
-    pub guards: &'a mut Vec<WatchGuard>,
+/// The sending half of a [`ParamAnimator`]'s event channel.
+///
+/// It is `Send + Sync` and owns nothing tied to a reactive frontend, so an
+/// effect can hand it to watcher callbacks while the frontend keeps the
+/// (commonly non-`Send`) subscription guards on its own side.
+#[derive(Clone)]
+pub struct ParamSender {
+    sender: Sender<ParamAnimationEvent>,
+    redraw_callback: Arc<OnceLock<EffectRedrawCallback>>,
+    events_pending: Arc<core::sync::atomic::AtomicBool>,
 }
 
-impl SignalVisitor for WatcherInstaller<'_> {
+impl ParamSender {
+    /// Queues a new target for parameter `param_index` and wakes the host.
+    pub fn send(&self, param_index: usize, target: AnimatedTarget) {
+        self.sender
+            .send(ParamAnimationEvent {
+                param_index,
+                target_value: target.value,
+                interpolator: target.interpolator,
+            })
+            .expect("filtrate parameter event receiver dropped while watcher is active");
+        self.events_pending
+            .store(true, core::sync::atomic::Ordering::Release);
+        if let Some(callback) = self.redraw_callback.get() {
+            callback();
+        }
+    }
+
+    /// Subscribes `param` so every change it reports reaches parameter
+    /// `param_index`. The returned guard keeps the subscription alive.
+    pub fn watch<P: FilterParam + ?Sized>(&self, param_index: usize, param: &P) -> WatchGuard {
+        let sender = self.clone();
+        param.watch_animated(Box::new(move |target| sender.send(param_index, target)))
+    }
+}
+
+pub struct WatcherInstaller {
+    pub sender: ParamSender,
+    pub guards: Vec<WatchGuard>,
+}
+
+impl SignalVisitor for WatcherInstaller {
     fn visit<P: FilterParam + ?Sized>(&mut self, param_index: usize, param: &P) {
-        let sender = self.sender.clone();
-        let redraw_callback = self.redraw_callback.clone();
-        let events_pending = self.events_pending.clone();
-        let guard = param.watch_animated(Box::new(move |target| {
-            sender
-                .send(ParamAnimationEvent {
-                    param_index,
-                    target_value: target.value,
-                    interpolator: target.interpolator,
-                })
-                .expect("filtrate parameter event receiver dropped while watcher is active");
-            events_pending.store(true, core::sync::atomic::Ordering::Release);
-            if let Some(callback) = redraw_callback.get() {
-                callback();
-            }
-        }));
-        self.guards.push(guard);
+        self.guards.push(self.sender.watch(param_index, param));
     }
 }
 
@@ -119,16 +140,10 @@ pub struct ParamAnimator {
     target_params_dirty: bool,
     /// Animation state owned by the render thread.
     state: SharedAnimationState,
-    /// Parameter watcher guards dropped before their event channel and callback.
-    _watcher_guards: Vec<WatchGuard>,
     /// Parameter-change events, each carrying optional animation metadata.
     events: Receiver<ParamAnimationEvent>,
-    /// Set by watcher callbacks the instant an event is queued, cleared when
-    /// events are consumed — lets `redraw_hint` see changes that arrived
-    /// between frames without draining the channel.
-    events_pending: Arc<core::sync::atomic::AtomicBool>,
-    /// Host wake callback shared with every parameter watcher.
-    redraw_callback: Arc<OnceLock<EffectRedrawCallback>>,
+    /// The sending half handed to watcher callbacks.
+    sender: ParamSender,
 }
 
 impl core::fmt::Debug for ParamAnimator {
@@ -146,18 +161,23 @@ impl ParamAnimator {
     ///
     /// `install` receives the [`WatcherInstaller`] and is expected to visit
     /// every parameter (`visit_signals`/`visit_params`) with indices matching
-    /// `initial_targets`.
-    pub fn new(initial_targets: Vec<f32>, install: impl FnOnce(&mut WatcherInstaller<'_>)) -> Self {
+    /// `initial_targets`. The returned guards keep those watchers alive; the
+    /// owner drops them before the animator, whose channel the watchers feed.
+    pub fn new(
+        initial_targets: Vec<f32>,
+        install: impl FnOnce(&mut WatcherInstaller),
+    ) -> (Self, Vec<WatchGuard>) {
         let (sender, events) = mpsc::channel();
-        let redraw_callback = Arc::new(OnceLock::new());
-        let events_pending = Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut watcher_guards = Vec::with_capacity(initial_targets.len());
-        install(&mut WatcherInstaller {
+        let sender = ParamSender {
             sender,
-            redraw_callback: redraw_callback.clone(),
-            events_pending: events_pending.clone(),
-            guards: &mut watcher_guards,
-        });
+            redraw_callback: Arc::new(OnceLock::new()),
+            events_pending: Arc::new(core::sync::atomic::AtomicBool::new(false)),
+        };
+        let mut installer = WatcherInstaller {
+            sender: sender.clone(),
+            guards: Vec::with_capacity(initial_targets.len()),
+        };
+        install(&mut installer);
 
         let state = SharedAnimationState {
             tracks: initial_targets
@@ -171,21 +191,43 @@ impl ParamAnimator {
             current_values: initial_targets.clone(),
             has_active_animation: false,
         };
-        Self {
+        let animator = Self {
             target_params: initial_targets,
             target_params_dirty: true,
             state,
-            _watcher_guards: watcher_guards,
             events,
-            events_pending,
-            redraw_callback,
-        }
+            sender,
+        };
+        (animator, installer.guards)
+    }
+
+    /// Appends a parameter seeded with `initial` and returns its index.
+    pub fn push_param(&mut self, initial: f32) -> usize {
+        let index = self.target_params.len();
+        self.target_params.push(initial);
+        self.state.current_values.push(initial);
+        self.state.tracks.push(ParamTrackState {
+            track: AnimationTrack::new(initial),
+            animated_target: None,
+        });
+        self.target_params_dirty = true;
+        index
+    }
+
+    /// The number of parameters this animator drives.
+    pub const fn param_count(&self) -> usize {
+        self.target_params.len()
+    }
+
+    /// The sending half of the event channel, for watchers installed later.
+    pub fn sender(&self) -> ParamSender {
+        self.sender.clone()
     }
 
     /// Installs the host wake callback. Must run exactly once, before setup.
     pub fn install_redraw_callback(&self, callback: EffectRedrawCallback) {
         assert!(
-            self.redraw_callback.set(callback).is_ok(),
+            self.sender.redraw_callback.set(callback).is_ok(),
             "filtrate redraw callback must be installed exactly once before setup"
         );
     }
@@ -194,13 +236,14 @@ impl ParamAnimator {
     /// watcher callbacks have something to call.
     pub fn ensure_redraw_callback(&self) {
         let _ = self
+            .sender
             .redraw_callback
             .get_or_init(|| Arc::new(|| {}) as EffectRedrawCallback);
     }
 
     /// The installed wake callback, if any — used when chaining adapters.
     pub fn redraw_callback(&self) -> Option<EffectRedrawCallback> {
-        self.redraw_callback.get().cloned()
+        self.sender.redraw_callback.get().cloned()
     }
 
     /// Snaps every current value to its target and clears animation state.
@@ -217,7 +260,8 @@ impl ParamAnimator {
     }
 
     fn consume_events(&mut self) {
-        self.events_pending
+        self.sender
+            .events_pending
             .store(false, core::sync::atomic::Ordering::Release);
         while let Ok(event) = self.events.try_recv() {
             assert!(
@@ -294,6 +338,7 @@ impl ParamAnimator {
         self.target_params_dirty
             || self.state.has_active_animation
             || self
+                .sender
                 .events_pending
                 .load(core::sync::atomic::Ordering::Acquire)
     }

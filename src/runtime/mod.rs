@@ -16,12 +16,13 @@ mod uniform;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use shader::is_filterable_texture_format;
 pub use shader::{HdrPolicy, SpatialExecution};
 
 use alloc::{boxed::Box, vec::Vec};
 use core::fmt;
 
-use filtrate_core::{Chain, Filter, MAX_FILTER_PARAMS, ParamArray};
+use filtrate_core::{Chain, Filter, MAX_FILTER_PARAMS, ParamArray, WatchGuard};
 
 #[cfg(test)]
 use crate::effect::EffectFrameTiming;
@@ -40,9 +41,9 @@ use plan::{
     final_direct_output_pass_index, fuse_stages, plan_runtime_bindings,
 };
 use shader::{
-    SPATIAL_WORKGROUP_X, SPATIAL_WORKGROUP_Y, SpatialBackend, is_filterable_texture_format,
-    is_hdr_texture_format, preferred_scratch_format, specialize_color_shader,
-    specialize_spatial_fragment_shader, specialize_spatial_shader,
+    SPATIAL_WORKGROUP_X, SPATIAL_WORKGROUP_Y, SpatialBackend, is_hdr_texture_format,
+    preferred_scratch_format, specialize_color_shader, specialize_spatial_fragment_shader,
+    specialize_spatial_shader,
 };
 use uniform::{
     build_color_uniform_data, build_spatial_uniform_data, create_pass_uniform_buffer,
@@ -71,7 +72,10 @@ use uniform::{
 ///   selected at setup from the device's limits — see [`SpatialExecution`].
 pub struct FilterAdapter<F: Filter> {
     filter: F,
-    /// Reactive-parameter driver: watchers, event channel, per-parameter tracks.
+    /// Parameter watcher subscriptions, dropped before the animator whose
+    /// channel they feed.
+    _watcher_guards: Vec<WatchGuard>,
+    /// Reactive-parameter driver: event channel and per-parameter tracks.
     animator: ParamAnimator,
     passes: Vec<CompiledPass>,
     /// Whether render should use scratch ping-pong textures.
@@ -118,11 +122,12 @@ impl<F: Filter> FilterAdapter<F> {
         let param_count = <F::Params as ParamArray>::LEN;
         let mut target_params = alloc::vec![0.0; param_count];
         filter.params().write_to(&mut target_params);
-        let animator = ParamAnimator::new(target_params, |installer| {
+        let (animator, watcher_guards) = ParamAnimator::new(target_params, |installer| {
             filter.visit_signals(installer);
         });
         Self {
             filter,
+            _watcher_guards: watcher_guards,
             animator,
             passes: Vec::new(),
             requires_scratch: false,

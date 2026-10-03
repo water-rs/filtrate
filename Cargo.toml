@@ -48,6 +48,9 @@ webgl = ["wgpu/webgl"]
 filtrate-core = { version = "0.2.0", path = "core" }
 filtrate-derive = { version = "0.1.0", path = "derive" }
 wgpu = "29.0.4"
+# Validates application WGSL for `ShaderEffect` on the CPU, so a broken
+# shader is an error at construction. The same naga wgpu already links.
+naga = { version = "29.0.4", features = ["wgsl-in"] }
 shaderloom = { version = "0.1.2", default-features = false, features = ["runtime"] }
 bytemuck = { version = "1", features = ["derive"] }
 num-traits = { version = "0.2", default-features = false }

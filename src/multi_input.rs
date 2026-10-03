@@ -11,7 +11,7 @@ use core::fmt;
 use core::future::Future;
 use num_traits::ToPrimitive;
 
-use filtrate_core::{FilterParam, SignalVisitor};
+use filtrate_core::{FilterParam, SignalVisitor, WatchGuard};
 
 use crate::effect::EffectRedrawCallback;
 use crate::runtime::animation::{ParamAnimator, SnapshotCollector};
@@ -389,6 +389,9 @@ impl MultiInputRuntime {
 pub struct MultiInputFilter<O: MultiInputOperation> {
     operation: O,
     runtime: MultiInputRuntime,
+    /// Parameter watcher subscriptions, dropped before the animator whose
+    /// channel they feed.
+    _watcher_guards: Vec<WatchGuard>,
     /// Reactive-parameter driver shared with the single-input runtime.
     animator: ParamAnimator,
 }
@@ -413,12 +416,13 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
             values: alloc::vec![0.0; O::ANIMATED_PARAM_COUNT],
         };
         operation.visit_params(&mut snapshot);
-        let animator = ParamAnimator::new(snapshot.values, |installer| {
+        let (animator, watcher_guards) = ParamAnimator::new(snapshot.values, |installer| {
             operation.visit_params(installer);
         });
         Self {
             operation,
             runtime: MultiInputRuntime::default(),
+            _watcher_guards: watcher_guards,
             animator,
         }
     }
