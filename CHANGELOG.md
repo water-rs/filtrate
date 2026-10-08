@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/water-rs/filtrate/compare/v0.2.1...v0.2.2) - 2026-10-08
+
+### Added
+
+- *(effect)* application-supplied WGSL post-process effect ([#21](https://github.com/water-rs/filtrate/pull/21))
+
+### Fixed
+
+- *(shaders)* keep packaged translations byte-exact on Windows checkouts
+- *(ci)* pin the toolchain without disarming the MSRV leg ([#18](https://github.com/water-rs/filtrate/pull/18))
+
+### Other
+
+- pass the release pull request's gate without CI
+- *(shaders)* package built-in shader translations
+- let the PR source gate accept release-plz release branches ([#17](https://github.com/water-rs/filtrate/pull/17))
+- disable incremental builds and trim debuginfo ([#16](https://github.com/water-rs/filtrate/pull/16))
+- run tests with cargo nextest ([#14](https://github.com/water-rs/filtrate/pull/14))
+
 ## [0.2.1](https://github.com/water-rs/filtrate/compare/v0.2.0...v0.2.1) - 2026-09-13
 
 ### Added
